@@ -41,6 +41,16 @@ def get_argparse():
     parser.add_argument('-l', '--log_path',
                         default='./logs',
                         help='Path of the logs')
+    # Add coefficients for loss terms
+    parser.add_argument('--coeff_hard', type=float, default=1.0,
+                        help='Coefficient for hard loss')
+    parser.add_argument('--coeff_penalty', type=float, default=1.0,
+                        help='Coefficient for penalty loss')
+    parser.add_argument('--coeff_ae', type=float, default=1.0,
+                        help='Coefficient for autoencoder loss')
+    parser.add_argument('--coeff_stae', type=float, default=1.0,
+                        help='Coefficient for student-autoencoder loss')
+
     return parser.parse_args()
 
 # constants
@@ -185,6 +195,10 @@ def main():
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer, step_size=int(0.95 * config.train_steps), gamma=0.1)
     tqdm_obj = tqdm(range(config.train_steps))
+    
+
+    #training loop
+# Training loop
     for iteration, (image_st, image_ae), image_penalty in zip(
             tqdm_obj, train_loader_infinite, penalty_loader_infinite):
         if on_gpu:
@@ -202,21 +216,23 @@ def main():
 
         if image_penalty is not None:
             student_output_penalty = student(image_penalty)[:, :out_channels]
-            loss_penalty = torch.mean(student_output_penalty**2)
-            loss_st = loss_hard + loss_penalty
+            loss_penalty = torch.mean(student_output_penalty ** 2)
+            loss_st = config.coeff_hard * loss_hard + config.coeff_penalty * loss_penalty
         else:
-            loss_st = loss_hard
+            loss_st = config.coeff_hard * loss_hard
 
         ae_output = autoencoder(image_ae)
         with torch.no_grad():
             teacher_output_ae = teacher(image_ae)
             teacher_output_ae = (teacher_output_ae - teacher_mean) / teacher_std
         student_output_ae = student(image_ae)[:, out_channels:]
-        distance_ae = (teacher_output_ae - ae_output)**2
-        distance_stae = (ae_output - student_output_ae)**2
+        distance_ae = (teacher_output_ae - ae_output) ** 2
+        distance_stae = (ae_output - student_output_ae) ** 2
         loss_ae = torch.mean(distance_ae)
         loss_stae = torch.mean(distance_stae)
-        loss_total = loss_st + loss_ae + loss_stae
+        loss_total = (loss_st +
+                      config.coeff_ae * loss_ae +
+                      config.coeff_stae * loss_stae)
 
         optimizer.zero_grad()
         loss_total.backward()
@@ -229,16 +245,26 @@ def main():
 
         if iteration % 1000 == 0:
             torch.save(teacher, os.path.join(train_output_dir,
-                                             'teacher_tmp.pth'))
+                                            'teacher_tmp.pth'))
             torch.save(student, os.path.join(train_output_dir,
-                                             'student_tmp.pth'))
+                                            'student_tmp.pth'))
             torch.save(autoencoder, os.path.join(train_output_dir,
-                                                 'autoencoder_tmp.pth'))
+                                                'autoencoder_tmp.pth'))
             logger.info(f"Checkpoint saved at iteration {iteration}")
             if pretrain_penalty:
-                logger.info(f"l_total:{loss_total.item():.4f}, l_hard: {loss_hard.item():.4f}, l_ood: {loss_penalty.item():.4f}, l_ae: {loss_ae.item():.4f}, l_stae: {loss_stae.item():.4f}")     
+                logger.info(
+                    f"l_total:{loss_total.item():.4f}, "
+                    f"l_hard: {config.coeff_hard * loss_hard.item():.4f}, "
+                    f"l_ood: {config.coeff_penalty * loss_penalty.item():.4f}, "
+                    f"l_ae: {config.coeff_ae * loss_ae.item():.4f}, "
+                    f"l_stae: {config.coeff_stae * loss_stae.item():.4f}")
             else:
-                logger.info(f"l_total:{loss_total.item():.4f}, l_hard: {loss_hard.item():.4f}, l_ae: {loss_ae.item():.4f}, l_stae: {loss_stae.item():.4f}")                               
+                logger.info(
+                    f"l_total:{loss_total.item():.4f}, "
+                    f"l_hard: {config.coeff_hard * loss_hard.item():.4f}, "
+                    f"l_ae: {config.coeff_ae * loss_ae.item():.4f}, "
+                    f"l_stae: {config.coeff_stae * loss_stae.item():.4f}")
+                                  
 
         if iteration % 10000 == 0 and iteration > 0:
             # run intermediate evaluation
