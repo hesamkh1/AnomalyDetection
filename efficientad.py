@@ -13,6 +13,7 @@ from tqdm import tqdm
 from common import get_autoencoder, get_pdn_small, get_pdn_medium, \
     ImageFolderWithoutTarget, ImageFolderWithPath, InfiniteDataloader
 from sklearn.metrics import roc_auc_score
+from logger_setup import *
 
 def get_argparse():
     parser = argparse.ArgumentParser()
@@ -37,6 +38,9 @@ def get_argparse():
                         default='./mvtec_loco_anomaly_detection',
                         help='Downloaded Mvtec LOCO dataset')
     parser.add_argument('-t', '--train_steps', type=int, default=70000)
+    parser.add_argument('-l', '--log_path',
+                        default='./logs',
+                        help='Path of the logs')
     return parser.parse_args()
 
 # constants
@@ -66,6 +70,15 @@ def main():
     random.seed(seed)
 
     config = get_argparse()
+
+    # Set up logging
+    logger = setup_logger(config.log_path)
+    
+    logger.info(f"The outputs are being saved in {config.log_path}")
+    logger.info(f"Data set path: {config.mvtec_ad_path}")
+    logger.info(f"Sub Dataset path: {config.subdataset}")
+    logger.info(f"number of total iterations: {config.train_steps}")
+
 
     if config.dataset == 'mvtec_ad':
         dataset_path = config.mvtec_ad_path
@@ -101,6 +114,7 @@ def main():
                                                            [train_size,
                                                             validation_size],
                                                            rng)
+        logger.info(f"training size: {train_size},  validation size: {validation_size}")                                                   
     elif config.dataset == 'mvtec_loco':
         train_set = full_train_set
         validation_set = ImageFolderWithoutTarget(
@@ -116,6 +130,8 @@ def main():
     validation_loader = DataLoader(validation_set, batch_size=1)
 
     if pretrain_penalty:
+
+        logger.info(f"ImageNet Penalty is available at {config.imagenet_train_path}")
         # load pretraining data for penalty
         penalty_transform = transforms.Compose([
             transforms.Resize((2 * image_size, 2 * image_size)),
@@ -132,7 +148,9 @@ def main():
         penalty_loader_infinite = InfiniteDataloader(penalty_loader)
     else:
         penalty_loader_infinite = itertools.repeat(None)
+        logger.info("ImageNet Penalty is not available!")
 
+    logger.info(f"training is based on {config.model_size} model size")
     # create models
     if config.model_size == 'small':
         teacher = get_pdn_small(out_channels)
@@ -155,6 +173,9 @@ def main():
         teacher.cuda()
         student.cuda()
         autoencoder.cuda()
+        logger.info("training is running on GPU!")
+    else:
+        logger.info("training is running on CPU!!!")
 
     teacher_mean, teacher_std = teacher_normalization(teacher, train_loader)
 
@@ -213,9 +234,15 @@ def main():
                                              'student_tmp.pth'))
             torch.save(autoencoder, os.path.join(train_output_dir,
                                                  'autoencoder_tmp.pth'))
+            logger.info(f"Checkpoint saved at iteration {iteration}")
+            if pretrain_penalty:
+                logger.info(f"l_total:{loss_total.item():.4f}, l_hard: {loss_hard.item():.4f}, l_ood: {loss_penalty.item():.4f}, l_ae: {loss_ae.item():.4f}, l_stae: {loss_stae.item():.4f}")     
+            else:
+                logger.info(f"l_total:{loss_total.item():.4f}, l_hard: {loss_hard.item():.4f}, l_ae: {loss_ae.item():.4f}, l_stae: {loss_stae.item():.4f}")                               
 
         if iteration % 10000 == 0 and iteration > 0:
             # run intermediate evaluation
+            logger.info("Running intermediate evaluation...")
             teacher.eval()
             student.eval()
             autoencoder.eval()
@@ -231,7 +258,7 @@ def main():
                 teacher_std=teacher_std, q_st_start=q_st_start,
                 q_st_end=q_st_end, q_ae_start=q_ae_start, q_ae_end=q_ae_end,
                 test_output_dir=None, desc='Intermediate inference')
-            print('Intermediate image auc: {:.4f}'.format(auc))
+            logger.info(f"Intermediate AUC at iteration {iteration}: {auc:.4f}")
 
             # teacher frozen
             teacher.eval()
@@ -246,6 +273,7 @@ def main():
     torch.save(student, os.path.join(train_output_dir, 'student_final.pth'))
     torch.save(autoencoder, os.path.join(train_output_dir,
                                          'autoencoder_final.pth'))
+    logger.info("Final models saved.")
 
     q_st_start, q_st_end, q_ae_start, q_ae_end = map_normalization(
         validation_loader=validation_loader, teacher=teacher, student=student,
@@ -257,7 +285,8 @@ def main():
         teacher_std=teacher_std, q_st_start=q_st_start, q_st_end=q_st_end,
         q_ae_start=q_ae_start, q_ae_end=q_ae_end,
         test_output_dir=test_output_dir, desc='Final inference')
-    print('Final image auc: {:.4f}'.format(auc))
+    logger.info(f"Final AUC: {auc:.4f}")
+
 
 def test(test_set, teacher, student, autoencoder, teacher_mean, teacher_std,
          q_st_start, q_st_end, q_ae_start, q_ae_end, test_output_dir=None,
