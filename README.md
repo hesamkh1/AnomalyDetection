@@ -1,3 +1,5 @@
+this respository is based on https://github.com/nelson1425/EfficientAD
+
 # EfficientAD
 Unofficial implementation of paper https://arxiv.org/abs/2303.14535
 
