@@ -14,6 +14,7 @@ from tqdm import tqdm
 import generic_util as util
 from pro_curve_util import compute_pro
 from roc_curve_util import compute_classification_roc
+from threshold_computation import compute_threshold, compute_Fscore
 
 
 def parse_user_arguments():
@@ -53,6 +54,10 @@ def parse_user_arguments():
                                 all dataset objects will be evaluated.""",
                         choices=util.OBJECT_NAMES,
                         default=util.OBJECT_NAMES)
+    parser.add_argument('--beta',
+                        type=float,
+                        default=1,
+                        help="""Coefficient to compute the F(beta)score""")
 
     args = parser.parse_args()
 
@@ -183,6 +188,83 @@ def calculate_au_pro_au_roc(gt_filenames,
     return au_pro, au_roc, pro_curve, roc_curve
 
 
+def calculate_threshold(gt_filenames,
+                            prediction_filenames):
+                    
+    """ Compute the best threshold and the best possible accuracy
+    (obtained by that threshold setting) """
+
+    # Read all ground truth and anomaly images.
+    ground_truth = []
+    predictions = []
+
+    print("Read ground truth files and corresponding predictions...")
+    for (gt_name, pred_name) in tqdm(zip(gt_filenames, prediction_filenames),
+                                     total=len(gt_filenames)):
+        prediction = util.read_tiff(pred_name)
+        predictions.append(prediction)
+
+        if gt_name is not None:
+            ground_truth.append(np.asarray(Image.open(gt_name)))
+        else:
+            ground_truth.append(np.zeros(prediction.shape))
+
+    # Derive binary labels for each input image:
+    # (0 = anomaly free, 1 = anomalous).
+    binary_labels = [int(np.any(x > 0)) for x in ground_truth]
+    del ground_truth
+
+    # Compute the threshold and accuracy
+    threshold, best_acc = compute_threshold(
+        anomaly_maps=predictions,
+        scoring_function=np.max,
+        ground_truth_labels=binary_labels)
+
+    print(f"Optimum Threshold: {threshold}, Best Accuracy: {best_acc}")
+
+    # Return the threshold and the best accuracy associated
+    return threshold, best_acc
+
+
+def calculate_Fscore(beta, gt_filenames,
+                            prediction_filenames):
+                    
+    """ Compute the best Fscore and the best possible threshold
+    (obtained by that threshold setting) """
+
+    # Read all ground truth and anomaly images.
+    ground_truth = []
+    predictions = []
+
+    print("Read ground truth files and corresponding predictions...")
+    for (gt_name, pred_name) in tqdm(zip(gt_filenames, prediction_filenames),
+                                     total=len(gt_filenames)):
+        prediction = util.read_tiff(pred_name)
+        predictions.append(prediction)
+
+        if gt_name is not None:
+            ground_truth.append(np.asarray(Image.open(gt_name)))
+        else:
+            ground_truth.append(np.zeros(prediction.shape))
+
+    # Derive binary labels for each input image:
+    # (0 = anomaly free, 1 = anomalous).
+    binary_labels = [int(np.any(x > 0)) for x in ground_truth]
+    del ground_truth
+
+    # Compute the Fscore
+    threshold, best_Fscore = compute_Fscore(
+        beta = beta,
+        anomaly_maps=predictions,
+        scoring_function=np.max,
+        ground_truth_labels=binary_labels)
+
+    print(f"Optimum Threshold for Fscore: {threshold}, Best F{beta}score: {best_Fscore}")
+
+    # Return the threshold and the best accuracy associated
+    return threshold, best_Fscore
+
+
 def main():
     """Calculate the performance metrics for a single experiment on the
     MVTec AD dataset.
@@ -196,6 +278,12 @@ def main():
     # Keep track of the mean performance measures.
     au_pros = []
     au_rocs = []
+
+    # Extract beta
+    beta = args.beta
+
+    # Metrics
+    metrics_dir = path.join(args.output_dir, 'metrics'+'.json')
 
     # Evaluate each dataset object separately.
     for obj in args.evaluated_objects:
@@ -217,11 +305,30 @@ def main():
                 prediction_filenames,
                 args.pro_integration_limit)
 
+        # Calculate threshold and best accuracy.
+        threshold, best_acc = \
+            calculate_threshold(
+              gt_filenames,
+              prediction_filenames)
+
+        # Calculate threshold and best Fscore.
+        thresholdF, best_Fscore = \
+            calculate_Fscore(
+              beta,
+              gt_filenames,
+              prediction_filenames)
+
         evaluation_dict[obj]['au_pro'] = au_pro
         evaluation_dict[obj]['classification_au_roc'] = au_roc
 
         evaluation_dict[obj]['classification_roc_curve_fpr'] = roc_curve[0]
         evaluation_dict[obj]['classification_roc_curve_tpr'] = roc_curve[1]
+
+        evaluation_dict[obj]['optimal_threshold'] = threshold
+        evaluation_dict[obj]['best_accuracy'] = best_acc
+
+        evaluation_dict[obj][f'threshold_F{beta}score'] = thresholdF
+        evaluation_dict[obj][f'best_F{beta}score'] = best_Fscore
 
         # Keep track of the mean performance measures.
         au_pros.append(au_pro)
@@ -237,10 +344,24 @@ def main():
     if args.output_dir is not None:
         makedirs(args.output_dir, exist_ok=True)
 
+        clean_dict(evaluation_dict)
+
         with open(path.join(args.output_dir, 'metrics.json'), 'w') as file:
             json.dump(evaluation_dict, file, indent=4)
 
-        print(f"Wrote metrics to {path.join(args.output_dir, 'metrics.json')}")
+        print(f"Wrote metrics to {args.output_dir}")
+
+
+def clean_dict(d):
+    for key, value in d.items():
+        if isinstance(value, np.float32):
+            d[key] = float(value)
+        elif isinstance(value, np.integer):
+            d[key] = int(value)
+        elif isinstance(value, dict):
+            clean_dict(value)
+        elif isinstance(value, np.ndarray):
+            d[key] = value.tolist()
 
 
 if __name__ == "__main__":
