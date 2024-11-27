@@ -1,0 +1,8 @@
+# Please use Python 3.7 or newer.
+
+numpy==1.18.5
+Pillow==7.0.0
+scipy==1.7.1
+tabulate==0.8.7
+tifffile==2021.7.30
+tqdm==4.56.0

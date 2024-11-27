@@ -88,6 +88,7 @@ def main():
     logger.info(f"Data set path: {config.mvtec_ad_path}")
     logger.info(f"Sub Dataset path: {config.subdataset}")
     logger.info(f"number of total iterations: {config.train_steps}")
+    logger.info(f"output path: {config.output_dir}")
 
 
     if config.dataset == 'mvtec_ad':
@@ -197,8 +198,8 @@ def main():
     tqdm_obj = tqdm(range(config.train_steps))
     
 
+    logger.info(f"coefficients of losses: hard:{config.coeff_hard}, penalty:{config.coeff_penalty}, stae:{config.coeff_stae}, ae:{config.coeff_ae}")
     #training loop
-# Training loop
     for iteration, (image_st, image_ae), image_penalty in zip(
             tqdm_obj, train_loader_infinite, penalty_loader_infinite):
         if on_gpu:
