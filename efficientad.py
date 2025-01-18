@@ -189,6 +189,7 @@ def main():
         logger.info("training is running on CPU!!!")
 
     teacher_mean, teacher_std = teacher_normalization(teacher, train_loader)
+    
 
     optimizer = torch.optim.Adam(itertools.chain(student.parameters(),
                                                  autoencoder.parameters()),
