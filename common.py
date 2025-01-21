@@ -3,7 +3,8 @@
 from torch import nn
 from torchvision.datasets import ImageFolder
 
-def get_autoencoder(out_channels=384):
+def get_autoencoder(out_channels=384, padding=False):
+    output = 64 if (padding==True) else 56   # Modified this line. Where there's "output" there was 56.
     return nn.Sequential(
         # encoder
         nn.Conv2d(in_channels=3, out_channels=32, kernel_size=4, stride=2,

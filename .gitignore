@@ -1,4 +1,3 @@
-
 # Ignore virtual environment folder
 venv/
 
@@ -9,10 +8,18 @@ __pycache__/
 # Ignore logs and temporary files
 *.log
 
-logs/*
-!.gitkeep
+# Ignore the logs and output directories but keep .gitkeep files
+logs/
+!logs/.gitkeep
 
-output/*
-!.gitkeep
-    
-    
+output/
+!output/.gitkeep
+
+# Ignore specific image files
+student_teacher_map.png
+combined_map.png
+autoencoder_map.png
+original_image.png
+
+# Ignore Jupyter Notebook files
+prediction.ipynb
