@@ -243,37 +243,40 @@ def main():
             loss_st = config.coeff_hard * loss_hard
 
         # -------------------------------------------------------
-        # 2) MOM LOSS (Encourage large teacher–student distance in patch & small outside)
+        # 2) MOM LOSS 
         # -------------------------------------------------------
-        # Convert mask_st to boolean for indexing
-        # shape: mask_st => [B, 1, H, W], distance_st => [B, out_channels, H, W]
-        # broadcast or reshape to match if needed
-        mask_resized = F.interpolate(mask_st, size=(distance_st.shape[2], distance_st.shape[3]),
-                                    mode='nearest')
+        # Downsample mask to match teacher-student resolution
+        mask_resized = F.interpolate(
+            mask_st, size=(distance_st.shape[2], distance_st.shape[3]), mode='nearest'
+        )
 
-        mask_bool = (mask_resized > 0.5)
-        
-        distance_in_mask = distance_st[mask_bool.expand_as(distance_st)]  # gather all masked pixels
-        distance_out_mask = distance_st[~mask_bool.expand_as(distance_st)] 
+        # We'll define "normal" where mask=0, "abnormal" where mask=1
+        normal_mask = (mask_resized < 0.5)
+        abnormal_mask = (mask_resized >= 0.5)
 
-        # If your dataset randomly has images without patches, avoid zero-division:
-        if distance_in_mask.numel() > 0:
-            mean_in_mask = distance_in_mask.mean()
+        # Flatten the distance map and masks so we can sum them up easily
+        dist_flat = distance_st.view(-1)            # shape: [B*C*H*W]
+        normal_mask_flat = normal_mask.expand_as(distance_st).contiguous().view(-1)
+        abnormal_mask_flat = abnormal_mask.expand_as(distance_st).contiguous().view(-1)
+
+        distance_normal   = dist_flat[ normal_mask_flat ]
+        distance_abnormal = dist_flat[ abnormal_mask_flat ]
+
+        sum_n = distance_normal.sum()
+        sum_a = distance_abnormal.sum()
+        cnt_n = distance_normal.numel()
+        cnt_a = distance_abnormal.numel()
+
+        # If there are no abnormal pixels, we skip them to avoid division by zero
+        if cnt_n + cnt_a == 0:
+            mom_loss = torch.tensor(0.0, device=image_st.device)
         else:
-            mean_in_mask = torch.tensor(0.0, device=image_st.device)
+            # CDO-like approach: (normal_sum - abnormal_sum)/(count_normal + count_abnormal)
+            mom_loss = (sum_n - sum_a) / (cnt_n + cnt_a)
 
-        if distance_out_mask.numel() > 0:
-            mean_out_mask = distance_out_mask.mean()
-        else:
-            mean_out_mask = torch.tensor(0.0, device=image_st.device)
+        # Now combine with your existing teacher-student loss
+        loss_st_mom = loss_st + mom_loss
 
-        # mom_loss = out_mask - in_mask
-        # Minimizing => push distance_out_mask -> 0 (student = teacher on normal region),
-        #               push distance_in_mask -> large (student != teacher on anomaly region)
-        mom_loss = mean_out_mask - mean_in_mask
-        
-        # Add mom_loss to your existing student loss:
-        loss_st_mom = loss_st +  mom_loss
 
 
         ae_output = autoencoder(image_ae)
