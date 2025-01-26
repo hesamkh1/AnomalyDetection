@@ -15,6 +15,7 @@ import generic_util as util
 from pro_curve_util import compute_pro
 from roc_curve_util import compute_classification_roc
 from threshold_computation import compute_threshold, compute_Fscore
+import matplotlib.cm as cm  # e.g., "jet", "viridis", etc.
 
 
 def parse_user_arguments():
@@ -68,55 +69,47 @@ def parse_user_arguments():
 
 
 def parse_dataset_files(object_name, dataset_base_dir, anomaly_maps_dir):
-    """Parse the filenames for one object of the MVTec AD dataset.
-
-    Args:
-        object_name: Name of the dataset object.
-        dataset_base_dir: Base directory of the MVTec AD dataset.
-        anomaly_maps_dir: Base directory where anomaly maps are located.
-    """
-    assert object_name in util.OBJECT_NAMES
-
-    # Store a list of all ground truth filenames.
-    gt_filenames = []
-
-    # Store a list of all corresponding anomaly map filenames.
-    prediction_filenames = []
-
-    # Test images are located here.
+    # Same as before:
     test_dir = path.join(dataset_base_dir, object_name, 'test')
     gt_base_dir = path.join(dataset_base_dir, object_name, 'ground_truth')
     anomaly_maps_base_dir = path.join(anomaly_maps_dir, object_name, 'test')
 
-    # List all ground truth and corresponding anomaly images.
-    for subdir in listdir(str(test_dir)):
+    gt_filenames = []
+    prediction_filenames = []
+    test_image_filenames = []
 
+    for subdir in listdir(str(test_dir)):
         if not subdir.replace('_', '').isalpha():
             continue
 
-        # Get paths to all test images in the dataset for this subdir.
+        # Example: all the *.png test images in this subdir
         test_images = [path.splitext(file)[0]
-                       for file
-                       in listdir(path.join(test_dir, subdir))
+                       for file in listdir(path.join(test_dir, subdir))
                        if path.splitext(file)[1] == '.png']
 
-        # If subdir is not 'good', derive corresponding GT names.
+        # If subdir != 'good', we have ground-truth masks:
         if subdir != 'good':
             gt_filenames.extend(
                 [path.join(gt_base_dir, subdir, file + '_mask.png')
                  for file in test_images])
         else:
-            # No ground truth maps exist for anomaly-free images.
-            gt_filenames.extend([None] * len(test_images))
+            gt_filenames.extend([None]*len(test_images))
 
-        # Fetch corresponding anomaly maps.
+        # Corresponding anomaly-map filenames
         prediction_filenames.extend(
             [path.join(anomaly_maps_base_dir, subdir, file)
              for file in test_images])
 
-    print(f"Parsed {len(gt_filenames)} ground truth image files.")
+        # Also store the **original test image** path
+        test_image_filenames.extend(
+            [path.join(test_dir, subdir, file + '.png')
+             for file in test_images]
+        )
 
-    return gt_filenames, prediction_filenames
+    print(f"Parsed {len(gt_filenames)} ground truth image files for {object_name}.")
+
+    return gt_filenames, prediction_filenames, test_image_filenames
+
 
 
 def calculate_au_pro_au_roc(gt_filenames,
@@ -292,11 +285,13 @@ def main():
 
         # Parse the filenames of all ground truth and corresponding anomaly
         # images for this object.
-        gt_filenames, prediction_filenames = \
+        gt_filenames, prediction_filenames, test_image_filenames = \
             parse_dataset_files(
                 object_name=obj,
                 dataset_base_dir=args.dataset_base_dir,
-                anomaly_maps_dir=args.anomaly_maps_dir)
+                anomaly_maps_dir=args.anomaly_maps_dir
+            )
+
 
         # Calculate the PRO and ROC curves.
         au_pro, au_roc, pro_curve, roc_curve = \
@@ -317,6 +312,15 @@ def main():
               beta,
               gt_filenames,
               prediction_filenames)
+        
+        save_misclassified_images(
+        obj_name=obj,
+        test_image_filenames=test_image_filenames,
+        gt_filenames=gt_filenames,
+        prediction_filenames=prediction_filenames,
+        threshold=threshold,
+        output_dir=args.output_dir)
+
 
         evaluation_dict[obj]['au_pro'] = au_pro
         evaluation_dict[obj]['classification_au_roc'] = au_roc
@@ -362,6 +366,97 @@ def clean_dict(d):
             clean_dict(value)
         elif isinstance(value, np.ndarray):
             d[key] = value.tolist()
+
+def save_misclassified_images(obj_name,
+                              test_image_filenames,
+                              gt_filenames,
+                              prediction_filenames,
+                              threshold,
+                              output_dir):
+    """
+    Saves test images + anomaly maps that are misclassified at image level.
+    A misclassification is:
+      - ground-truth = normal, predicted anomaly
+      - ground-truth = anomaly, predicted normal
+    """
+    from PIL import Image
+    import numpy as np
+    import os
+
+    wrong_dir = path.join(output_dir, "wrong_predictions", obj_name)
+    makedirs(wrong_dir, exist_ok=True)
+
+    # Prepare ground-truth *binary labels* for each image:
+    #   0 => normal (subdir 'good'), 1 => anomalous.
+    # Because 'gt_filenames[i] = None' if subdir == 'good'.
+    binary_labels = []
+    for gt_file in gt_filenames:
+        if gt_file is not None:
+            binary_labels.append(1)
+        else:
+            binary_labels.append(0)
+
+    # Loop over all images
+    for i in range(len(test_image_filenames)):
+        test_image_path = test_image_filenames[i]
+        pred_map_path   = prediction_filenames[i]
+        gt_label        = binary_labels[i]
+
+        # Read the predicted anomaly map
+        anomaly_map = util.read_tiff(pred_map_path)   # shape: (H,W), float
+        score       = np.max(anomaly_map)
+        pred_label  = 1 if score > threshold else 0
+
+        # If misclassified, save to disk
+        if pred_label != gt_label:
+            base = path.splitext(path.basename(test_image_path))[0]
+
+            # 1) Save original test image
+            test_img = Image.open(test_image_path).convert('RGB')
+            out_img_path = path.join(wrong_dir, f"{base}_orig.png")
+            test_img.save(out_img_path)
+
+            # 2) Save anomaly map as grayscale
+            #    (Optionally normalize to [0..255] for better viewing)
+            max_val = anomaly_map.max()
+            if max_val > 1e-12:
+                anomaly_map_255 = (anomaly_map / max_val * 255).astype(np.uint8)
+            else:
+                anomaly_map_255 = anomaly_map.astype(np.uint8)
+            
+            out_map_path = path.join(wrong_dir, f"{base}_map.png")
+            save_colored_heatmap(anomaly_map_255, out_map_path)
+            
+            # (Optional) You could also overlay the map on the original image
+            # but for simplicity, we just save them separately.
+
+            print(f"Saved misclassified sample: {out_img_path}, {out_map_path}")
+
+
+
+def save_colored_heatmap(anomaly_map, save_path):
+    """
+    Saves the given anomaly_map as a color-coded heatmap using e.g. the 'jet' colormap.
+    """
+    # 1) Normalize anomaly map to [0,1] for colormap
+    amin, amax = anomaly_map.min(), anomaly_map.max()
+    if amax > amin:
+        anomaly_map_norm = (anomaly_map - amin) / (amax - amin)
+    else:
+        anomaly_map_norm = anomaly_map  # all zeros or a single value
+
+    # 2) Apply a matplotlib colormap (e.g. 'jet')
+    colormap = cm.get_cmap('jet')
+    colored_map = colormap(anomaly_map_norm)  # shape: (H,W,4) RGBA
+
+    # 3) Convert [0..1] float RGBA → uint8 [0..255], drop alpha if desired
+    colored_map = np.uint8(255 * colored_map[..., :3])  # shape: (H,W,3)
+
+    # 4) Create PIL Image and save
+    heatmap_pil = Image.fromarray(colored_map)
+    heatmap_pil.save(save_path)
+    # Optionally return it if you want to do something else
+    # return heatmap_pil
 
 
 if __name__ == "__main__":

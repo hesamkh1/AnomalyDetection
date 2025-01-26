@@ -23,3 +23,10 @@ original_image.png
 
 # Ignore Jupyter Notebook files
 prediction.ipynb
+
+#debug 
+debug_outputs/
+
+
+
+

@@ -12,7 +12,7 @@ import tifffile as tiff
 
 OBJECT_NAMES = ['bottle', 'cable', 'capsule', 'carpet', 'grid',
                 'hazelnut', 'leather', 'metal_nut', 'pill', 'screw',
-                'tile', 'toothbrush', 'transistor', 'wood', 'zipper','plastic_nut']
+                'tile', 'toothbrush', 'transistor', 'wood', 'zipper','plastic_nut','transistor', 'usb']
 
 
 def trapezoid(x, y, x_max=None):

@@ -16,6 +16,8 @@ from sklearn.metrics import roc_auc_score
 from logger_setup import *
 from MOMDataset import MOMDataset
 import torch.nn.functional as F
+from PIL import Image, ImageEnhance
+from torchvision.transforms import functional as FF
 
 def get_argparse():
     parser = argparse.ArgumentParser()
@@ -61,16 +63,40 @@ on_gpu = torch.cuda.is_available()
 out_channels = 384
 image_size = 256
 
+
 # data loading
 default_transform = transforms.Compose([
     transforms.Resize((image_size, image_size)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
-transform_ae = transforms.RandomChoice([
-    transforms.ColorJitter(brightness=0.2),
-    transforms.ColorJitter(contrast=0.2),
-    transforms.ColorJitter(saturation=0.2)
+# Custom transform for adjusting sharpness
+class AdjustSharpness:
+    def __init__(self, factor):
+        self.factor = factor  # Factor > 1 increases sharpness, < 1 decreases it
+
+    def __call__(self, img):
+        enhancer = ImageEnhance.Sharpness(img)
+        return enhancer.enhance(self.factor)
+
+# Custom transform for adjusting gamma
+class AdjustGamma:
+    def __init__(self, gamma, gain=1.0):
+        self.gamma = gamma  # Gamma value
+        self.gain = gain    # Gain value (constant multiplier)
+
+    def __call__(self, img):
+        return FF.adjust_gamma(img, gamma=self.gamma, gain=self.gain)
+
+# Define the transform pipeline
+transform_ae = transforms.Compose([
+    transforms.RandomChoice([
+        transforms.ColorJitter(brightness=0.2),
+        transforms.ColorJitter(contrast=(0.8, 0.8)),
+        transforms.ColorJitter(saturation=0.2),
+        AdjustSharpness(factor=1.2),  # Increase sharpness by 20%
+        AdjustGamma(gamma=0.8)        # Decrease gamma by 20%
+    ])
 ])
 
 def train_transform(image):
@@ -80,7 +106,7 @@ def main():
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-
+    
     config = get_argparse()
 
     # Set up logging
@@ -115,16 +141,16 @@ def main():
     # load data
     train_transform_final = transforms.Compose([
         transforms.Resize((image_size, image_size)),
+        transforms.RandomApply([transform_ae], p=0.90),  # Apply transform_ae randomly with 50% probability
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                            std=[0.229, 0.224, 0.225]),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
     full_train_set = MOMDataset(
         root_dir=os.path.join(dataset_path, config.subdataset, 'train'),
         perturbed=True,            # enable synthetic anomaly patches
         transform=train_transform_final,
-        skip_background=False      # or True, if you want to skip background patches
+        skip_background=True      # or True, if you want to skip background patches
     )
 
 
@@ -250,8 +276,8 @@ def main():
         mask_resized = F.interpolate(
             mask_st, size=(teacher_output_st.shape[2], teacher_output_st.shape[3]), mode='nearest'
         )
-        fee = F.normalize(teacher_feats, p=2, dim=1)
-        faa = F.normalize(student_feats, p=2, dim=1)
+        fee = F.normalize(teacher_output_st, p=2, dim=1)
+        faa = F.normalize(student_output_st, p=2, dim=1)
 
         # 2) Compute the CDO loss
         loss_cdo = cdo_loss_function(
@@ -259,7 +285,7 @@ def main():
             student_feats=faa,      # [B, out_channels, H, W]
             mask=mask_resized,                    # [B, 1, H, W]
             oom=True,                             # If you want OOM weighting
-            gamma=1.0,                            # Or parse from config
+            gamma=2.0,                            # Or parse from config
         )
 
         loss_st_cdo = loss_st + loss_cdo
